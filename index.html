@@ -1,0 +1,142 @@
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Completions</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/quill/1.3.7/quill.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/quill/1.3.7/quill.snow.min.css" rel="stylesheet">
+    <style>
+        #editor {
+            height: 300px;
+        }
+        .ql-ghost-text {
+            color: #999;
+            opacity: 0.7;
+        }
+    </style>
+</head>
+<body>
+    <h3> AI Completions Editor </h3>
+    <div id="editor"></div>
+    <script>
+		const debounce_delay = 800;
+		const post_edit_lock = 500;
+	
+        var Inline = Quill.import('blots/inline');
+		let ghostTexts = [];
+		let suggestionLock = false;
+		let updateLock = false;
+		
+		
+        class GhostTextBlot extends Inline { }
+        GhostTextBlot.blotName = 'ghost-text';
+        GhostTextBlot.tagName = 'span';
+        GhostTextBlot.className = 'ql-ghost-text';
+
+        Quill.register(GhostTextBlot);
+
+        var quill = new Quill('#editor', {
+            theme: 'snow',
+            modules: {
+                keyboard: {
+                    bindings: {
+                        tab: {
+                            key: 9,
+                            handler: function() {
+								let { ghostText, ghostTextIndex }  = ghostTexts.pop();
+                                if (ghostText) {
+                                    const cursorPosition = quill.getSelection().index;
+                                    quill.deleteText(ghostTextIndex, ghostText.length);
+                                    quill.insertText(ghostTextIndex, ghostText, 'ghost-text', false);
+                                    quill.removeFormat(ghostTextIndex, ghostText.length);
+                                    quill.setSelection(cursorPosition + ghostText.length, 0);
+                                    ghostText = '';
+                                    ghostTextIndex = -1;
+                                    return false;
+                                }
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+		
+		
+		
+        function debounce(func, wait) {
+            let timeout;
+            return function executedFunction(...args) {
+                const later = () => {
+                    clearTimeout(timeout);
+                    func(...args);
+                };
+                clearTimeout(timeout);
+                timeout = setTimeout(later, wait);
+            };
+        }
+		
+        const getSuggestion = debounce(function(text) {
+		if(suggestionLock)return;
+		suggestionLock = true;
+            fetch('/get_suggestion', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({text: text}),
+            })
+            .then(response => response.json())
+            .then(data => {
+				if(updateLock){
+					getSuggestion(quill.getText().trim());
+					return;
+				};
+                ghostText = data.suggestion;
+                if (ghostText) {
+                    ghostTextIndex = quill.getLength() - 1;
+                    quill.insertText(ghostTextIndex, ghostText,{
+						color: "#999",
+            opacity: "0.7",
+					}, true);
+                    quill.setSelection(ghostTextIndex, 0);  // Move cursor back
+					ghostTexts.push(
+					{
+						ghostText,
+						ghostTextIndex
+					})
+                }
+				suggestionLock = false;
+            }).catch(()=>{
+				suggestionLock = false;
+			});
+        }, debounce_delay); // 500ms debounce time
+
+        quill.on('text-change', function(delta, oldDelta, source) {
+		console.log({delta, oldDelta, source});
+            if (source === 'user') {
+                
+				for(var i =0;i<ghostTexts.length;i++){
+					let { ghostTextIndex,ghostText} = ghostTexts[i];
+					quill.deleteText(ghostTextIndex, ghostText.length+1);
+					for(var j = 0;j < delta.ops.length;j++){
+						let op = delta.ops[j];
+						if(op.insert){
+							quill.insertText(ghostTextIndex, op.insert, "api");
+						}
+					}
+					
+					console.log({ghostTextIndex, ghostText, delta});
+				}
+				const text = quill.getText().trim();
+				ghostTexts = [];
+                updateLock = true;
+				setTimeout(()=>{
+					updateLock = false;
+				}, post_edit_lock);
+                getSuggestion(text);
+            }
+        });
+    </script>
+</body>
+</html>
